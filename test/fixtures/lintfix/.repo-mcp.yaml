@@ -1,0 +1,4 @@
+version: 1
+lint:
+  - import: test/always-flag-foo
+    config: {}

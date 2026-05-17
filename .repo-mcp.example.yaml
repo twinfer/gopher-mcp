@@ -1,0 +1,63 @@
+# .repo-mcp.yaml — per-repo configuration for gopher-mcp.
+#
+# Drop this file at your repo root. gopher-mcp loads it on startup; absence
+# is fine (the server still works as a generic Go nav without resources,
+# citations, proto xref, or lint).
+
+version: 1
+
+# resources — files exposed as MCP resources at URI `repo:<path>`. Use this
+# for non-negotiable guidance (conventions, design docs, on-call playbooks).
+# Agents can ReadResource these without going through filesystem tools.
+resources:
+  - path: CLAUDE.md
+    title: Repo conventions
+    description: Top-level rules. Read before any non-trivial edit.
+
+  - path: docs/architecture.md
+    title: Architecture overview
+
+# citations — regex patterns for in-source citations into vendored or
+# upstream code. When a comment cites "crates/foo/bar.rs:42", the
+# `cite_resolve` tool reads that exact line out of vendor_root.
+citations:
+  - pattern: 'crates/[\w/.-]+\.rs:\d+'
+    vendor_root: ./vendor/restate
+    description: Restate engine Rust source (mirrored design).
+
+# proto — Go packages generated from .proto files. The `proto_field_xref`
+# tool scans these packages' struct tags (`protobuf:"...,name=..."`) and
+# lets agents find Go code that reads or writes a proto field by its
+# snake_case .proto name.
+proto:
+  - import: example.com/yourrepo/proto/enginev1
+  - import: example.com/yourrepo/proto/apiv1
+
+# lint — analyzers to run via the `lint` tool. Each entry's `import:` is a
+# registry key that must correspond to an analyzer linked into the binary
+# (see "Adding analyzers" in README.md). `config:` is passed verbatim to
+# the analyzer's factory.
+lint:
+  # bannedinscope: forbid calls to specific qualified names within scoped
+  # packages. Common use case: keep deterministic execution sandboxes free
+  # of wall-clock time, randomness, network, or env access.
+  - import: github.com/twinfer/gopher-mcp/pkg/analyzers/bannedinscope
+    config:
+      banned:
+        - time.Now
+        - time.Since
+        - "math/rand.*"
+        - net/http.Get
+        - os.Getenv
+      scope_packages:
+        - example.com/yourrepo/pkg/sdk/...
+        - example.com/yourrepo/examples/...
+
+# entry_points — named function sets used by reverse_trace and similar
+# graph queries. Pick functions that represent real ingress (HTTP handlers,
+# RPC entry points, raft state-machine apply, etc.).
+entry_points:
+  apply_path:
+    - example.com/yourrepo/internal/engine.(*Partition).Update
+  http_ingress:
+    - example.com/yourrepo/internal/api.(*Server).Handle

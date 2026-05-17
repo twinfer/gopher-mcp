@@ -1,0 +1,12 @@
+version: 1
+resources:
+  - path: CLAUDE.md
+    title: Repo conventions
+    description: Top-level guidance for editing this repo.
+citations:
+  - pattern: 'vendor-src/[\w/.-]+\.rs:\d+'
+    vendor_root: ./vendored
+    description: Cites into the bundled vendored crate.
+proto:
+  - import: example.com/tiny/pkg/protogen
+lint: []
