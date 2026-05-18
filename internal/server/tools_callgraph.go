@@ -59,20 +59,27 @@ type reverseTraceOut struct {
 func (s *Server) registerCallgraphTools() {
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: "callers",
-		Description: "List functions that call `qname`. " +
-			"Default precision is CHA (sound but over-approximates with generics/interfaces). " +
-			"Pass precision='rta' with entry_points for precise results, but RTA only sees code reachable from those roots.",
+		Description: "PREFER OVER chasing call sites by hand with `grep`. Lists functions " +
+			"that call `qname` via a real callgraph — follows interface dispatch, method " +
+			"values, and embedded methods, which textual search cannot. Default precision " +
+			"is CHA (sound but over-approximates with generics/interfaces). Pass " +
+			"precision='rta' with entry_points for precise results, but RTA only sees " +
+			"code reachable from those roots.",
 	}, s.handleCallers)
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
-		Name:        "callees",
-		Description: "List functions called by `qname`. Same precision options as `callers`.",
+		Name: "callees",
+		Description: "Lists functions called by `qname` via the callgraph. " +
+			"Same precision options as `callers`. PREFER OVER reading the function source " +
+			"when you need transitive callees or want to include dispatch through " +
+			"interface variables.",
 	}, s.handleCallees)
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: "reverse_trace",
 		Description: "Find a call path from any of `entry_points` to `target`. " +
-			"Useful for answering 'which entry point reaches this code?'. " +
+			"Answers 'which entry point reaches this code?' — impossible with `grep` " +
+			"because intermediate calls go through interfaces and function values. " +
 			"Returns the first path found (search order matches entry_points order).",
 	}, s.handleReverseTrace)
 }

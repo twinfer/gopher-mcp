@@ -38,6 +38,46 @@ gopher-mcp -root /path/to/repo -tags=integration,wasm   # extra build tags
 
 `gopher-mcp` requires a `go.mod` at the root.
 
+## Get Claude Code to actually use it
+
+Claude Code (and most MCP clients) default to `grep` for code search — it's
+fast, always available, and the model has years of training on it. Without
+explicit routing, the model will reach for `grep` even when a semantic tool
+would give a strictly better answer. The MCP tool descriptions push back on
+this, but the strongest lever is a project-level `CLAUDE.md`.
+
+Drop the following block into the `CLAUDE.md` at the root of any repo where
+you've wired up `gopher-mcp`:
+
+```md
+## Go navigation — use the `repo` MCP, not grep
+
+For Go code in this repo, prefer the MCP tools over textual search:
+
+| Goal                              | Use                                            | Not                          |
+| --------------------------------- | ---------------------------------------------- | ---------------------------- |
+| Find where a symbol is declared   | `mcp__repo__find_symbol`                       | `grep "func Foo"`            |
+| Jump from a use-site to its decl  | `mcp__repo__definition`                        | reading the file             |
+| Find every caller of a function   | `mcp__repo__references` / `callers`            | `grep -r "Foo("`             |
+| List types implementing an iface  | `mcp__repo__implementations`                   | grep + guessing              |
+| Match Go syntax (calls, asserts)  | `mcp__repo__ast_grep`                          | `grep`                       |
+| Trace which entry reaches code X  | `mcp__repo__reverse_trace`                     | reading call sites manually  |
+| Find readers/writers of a proto   | `mcp__repo__proto_field_xref`                  | `grep "FieldName"`           |
+| Resolve a `crates/...:42` comment | `mcp__repo__cite_resolve`                      | walking vendor by hand       |
+
+Grep is still the right tool for: comments, log strings, config files,
+non-Go files, and anything outside the Go module.
+```
+
+Rename `repo` to whatever you called the server in `.mcp.json`. The exact
+phrasing matters less than being prescriptive — "use X when Y" beats
+"please consider using the MCP."
+
+If routing via `CLAUDE.md` isn't enough, you can add a `PreToolUse` hook
+that blocks `grep`/`rg` invocations on `.go` files and points the model at
+the MCP instead. That's heavy-handed but effective for repos where you want
+hard guarantees.
+
 ## Tools
 
 All tools return both human-readable text and structured JSON

@@ -35,7 +35,10 @@ type astGrepOut struct {
 func (s *Server) registerASTTools() {
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: "ast_grep",
-		Description: "Structural AST search. Pick a kind:\n" +
+		Description: "PREFER OVER `grep` when matching Go *syntax* — calls, conversions, " +
+			"type assertions, interface satisfaction. Operates on the typed AST, so " +
+			"`Foo(x)` only matches actual calls to the right `Foo` (not strings, " +
+			"comments, or unrelated packages' `Foo`). Pick a kind:\n" +
 			"  - call: find calls to a qualified function (use 'func', optional 'n_args')\n" +
 			"  - typeassert: find type assertions to a qualified type (use 'target')\n" +
 			"  - conv: find conversions to a qualified type (use 'target')\n" +

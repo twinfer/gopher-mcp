@@ -81,24 +81,38 @@ type implementationsOut struct {
 func (s *Server) registerNavTools() {
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: "find_symbol",
-		Description: "Locate Go symbols by short name across the indexed module. " +
-			"Supports '*' wildcards. Optional 'kind' filter: func, method, type, var, const.",
+		Description: "PREFER OVER `grep` for locating Go declarations. " +
+			"Returns the declaring file:line and package-qualified name for every Go " +
+			"symbol whose short name matches. Aware of packages, kinds, and methods on " +
+			"embedded types — grep misses all three and produces false hits on strings " +
+			"and comments. Supports '*' wildcards. Optional 'kind' filter: func, method, " +
+			"type, var, const.",
 	}, s.handleFindSymbol)
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
-		Name:        "definition",
-		Description: "Resolve the symbol at file:line:col and return its declaration position.",
+		Name: "definition",
+		Description: "PREFER OVER reading files or `grep` to jump from a use-site to its " +
+			"declaration. Resolves the symbol at file:line:col through the type checker, " +
+			"so it follows interface dispatch, embedded methods, dot-imports, and " +
+			"generic instantiations — none of which textual search can resolve.",
 	}, s.handleDefinition)
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: "references",
-		Description: "List every use-site of a qualified symbol. The qname format matches ssa.Function.String(): " +
-			"'pkg/path.Func', '(*pkg/path.Recv).Method', 'pkg/path.TypeName'.",
+		Description: "PREFER OVER `grep` for 'who uses X?' in Go. Returns every use-site " +
+			"of a qualified symbol via the type checker — no false positives from same-" +
+			"named symbols in other packages, and catches method calls through interfaces " +
+			"that grep misses entirely. The qname format matches ssa.Function.String(): " +
+			"'pkg/path.Func', '(*pkg/path.Recv).Method', 'pkg/path.TypeName'. " +
+			"If you don't know the qname yet, call `find_symbol` first.",
 	}, s.handleReferences)
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
-		Name:        "implementations",
-		Description: "List every named type whose method set satisfies the given interface qname.",
+		Name: "implementations",
+		Description: "Lists every named type whose method set satisfies the given Go " +
+			"interface qname. `grep` cannot answer this — method-set satisfaction is " +
+			"structural, not textual, and types often satisfy interfaces without ever " +
+			"naming them.",
 	}, s.handleImplementations)
 }
 

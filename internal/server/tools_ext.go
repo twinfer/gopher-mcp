@@ -89,23 +89,27 @@ func (s *Server) registerExtTools() {
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: "cite_resolve",
 		Description: "Resolve a citation string (e.g. 'crates/foo/bar.rs:42') against the " +
-			"vendor roots declared in .repo-mcp.yaml `citations`. Returns the file, " +
-			"line number, the line's text, and an optional context window.",
+			"vendor roots declared in .repo-mcp.yaml `citations`. PREFER OVER manually " +
+			"`grep`-walking vendored trees when a code comment cites foreign source. " +
+			"Returns the file, line number, the line's text, and an optional context window.",
 	}, s.handleCiteResolve)
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: "proto_field_xref",
-		Description: "Find Go code that reads or writes a protobuf field. " +
-			"Identifies the field by message name + field name (snake_case from the .proto, " +
-			"or PascalCase Go name — either works), then returns every Go reference to the " +
-			"corresponding generated struct field.",
+		Description: "PREFER OVER `grep` for finding Go reads/writes of a protobuf field. " +
+			"Field names like `Id` or `Name` collide constantly under text search; this " +
+			"tool resolves the message + field through the generated struct, then returns " +
+			"only true references to that field. Accepts snake_case (from .proto) or " +
+			"PascalCase (Go) — either works.",
 	}, s.handleProtoFieldXRef)
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: "lint",
 		Description: "Run the analyzers configured in .repo-mcp.yaml `lint` over the index. " +
 			"Each entry's `import` field maps to an analyzer that must be linked into this binary. " +
-			"Use `analyzers` to restrict to specific names, or `package_glob` to restrict scope.",
+			"Use `analyzers` to restrict to specific names, or `package_glob` to restrict scope. " +
+			"For repo-specific invariants (banned calls in deterministic scopes, etc.), " +
+			"this catches violations a generic linter and `grep` will both miss.",
 	}, s.handleLint)
 }
 
