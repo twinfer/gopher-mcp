@@ -6,6 +6,16 @@
 
 version: 1
 
+# dep_index — controls which package tiers gopher-mcp indexes for
+# find_symbol / references / implementations / ast_grep. Workspace packages
+# are always indexed. Direct deps (`require` lines in go.mod) default to on.
+# Stdlib and indirect deps are opt-in — each ~10×s the indexed symbol count
+# on a typical repo, so think before flipping them.
+dep_index:
+  direct: true      # default; set false to limit to workspace-only
+  indirect: false   # transitive deps not in your require block
+  stdlib: false     # the Go standard library (fmt, encoding/json, ...)
+
 # resources — files exposed as MCP resources at URI `repo:<path>`. Use this
 # for non-negotiable guidance (conventions, design docs, on-call playbooks).
 # Agents can ReadResource these without going through filesystem tools.

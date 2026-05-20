@@ -27,9 +27,11 @@ func main() {
 	var (
 		rootFlag string
 		tagsFlag string
+		depsFlag string
 	)
 	flag.StringVar(&rootFlag, "root", "", "repository root (defaults to $REPO_ROOT or cwd)")
 	flag.StringVar(&tagsFlag, "tags", "", "comma-separated build tags for packages.Load")
+	flag.StringVar(&depsFlag, "deps", "", "dep index scope: 'workspace', 'direct' (default), 'all', or 'stdlib'. Overrides .repo-mcp.yaml dep_index when set.")
 	flag.Parse()
 
 	root, err := resolveRoot(rootFlag)
@@ -40,6 +42,11 @@ func main() {
 	cfg, found, err := config.Load(root)
 	if err != nil {
 		log.Fatalf("gopher-mcp: config: %v", err)
+	}
+	if depsFlag != "" {
+		if err := applyDepsFlag(&cfg, depsFlag); err != nil {
+			log.Fatalf("gopher-mcp: -deps: %v", err)
+		}
 	}
 	if found {
 		fmt.Fprintf(os.Stderr, "gopher-mcp: loaded .repo-mcp.yaml (v%d) from %s\n", cfg.Version, root)
@@ -60,8 +67,10 @@ func main() {
 		log.Fatalf("gopher-mcp: index load: %v", err)
 	}
 	snap := ix.Snapshot()
-	fmt.Fprintf(os.Stderr, "gopher-mcp: indexed %d package(s) in %s; %d load error(s)\n",
-		len(snap.Pkgs), time.Since(loadStart).Round(time.Millisecond), len(snap.LoadErrs))
+	fmt.Fprintf(os.Stderr, "gopher-mcp: workspace %d / known %d package(s) in %s; %s; %d load error(s)\n",
+		len(snap.Pkgs), len(snap.AllPkgs),
+		time.Since(loadStart).Round(time.Millisecond),
+		tierBreakdown(snap), len(snap.LoadErrs))
 
 	wt, err := index.NewWatcher(ix, 0, func(format string, args ...any) {
 		fmt.Fprintf(os.Stderr, "gopher-mcp: "+format+"\n", args...)
@@ -82,6 +91,44 @@ func main() {
 	if err := srv.Run(ctx, &mcp.StdioTransport{}); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatalf("gopher-mcp: server: %v", err)
 	}
+}
+
+// tierBreakdown produces a "indexed: workspace=N direct=M …" suffix for the
+// startup log. Tiers with zero indexed entries are omitted to keep the line
+// short on small projects.
+func tierBreakdown(snap *index.Snapshot) string {
+	counts := map[index.PkgTier]int{}
+	for _, sym := range snap.Syms.ByQN {
+		counts[sym.Tier]++
+	}
+	var parts []string
+	for _, tier := range []index.PkgTier{index.TierWorkspace, index.TierDirect, index.TierIndirect, index.TierStdlib} {
+		if n := counts[tier]; n > 0 {
+			parts = append(parts, fmt.Sprintf("%s=%d", tier, n))
+		}
+	}
+	return "indexed symbols: " + strings.Join(parts, " ")
+}
+
+// applyDepsFlag overrides cfg.DepIndex from the CLI shorthand. The flag is a
+// preset that maps cleanly onto the three-bool config; users wanting finer
+// control should use .repo-mcp.yaml directly.
+func applyDepsFlag(cfg *config.RepoConfig, v string) error {
+	t := true
+	f := false
+	switch v {
+	case "workspace":
+		cfg.DepIndex = config.DepIndexConfig{Direct: &f}
+	case "direct":
+		cfg.DepIndex = config.DepIndexConfig{Direct: &t}
+	case "all":
+		cfg.DepIndex = config.DepIndexConfig{Direct: &t, Indirect: true, Stdlib: true}
+	case "stdlib":
+		cfg.DepIndex = config.DepIndexConfig{Direct: &t, Stdlib: true}
+	default:
+		return fmt.Errorf("unknown -deps %q (want workspace|direct|all|stdlib)", v)
+	}
+	return nil
 }
 
 func splitAndTrim(csv string) []string {

@@ -1,4 +1,4 @@
-//go:build p2
+//go:build p2 || p5
 
 package harness
 
@@ -19,6 +19,7 @@ type symbolHit struct {
 	PkgPath string `json:"pkg_path"`
 	File    string `json:"file"`
 	Line    int    `json:"line"`
+	Tier    string `json:"tier,omitempty"`
 }
 
 type findSymbolResult struct {

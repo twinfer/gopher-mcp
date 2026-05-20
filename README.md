@@ -66,7 +66,12 @@ For Go code in this repo, prefer the MCP tools over textual search:
 | Resolve a `crates/...:42` comment | `mcp__repo__cite_resolve`                      | walking vendor by hand       |
 
 Grep is still the right tool for: comments, log strings, config files,
-non-Go files, and anything outside the Go module.
+non-Go files, and anything outside the indexed module(s).
+
+Scope: the symbol/reference tools accept `scope` (`workspace`, `workspace+direct`
+(default), or `all`). The default catches calls inside your module and its
+direct `require`s. Pass `scope: "all"` to reach into indirect deps and stdlib
+when the server has been started with `-deps all` (or `dep_index.stdlib: true`).
 ```
 
 Rename `repo` to whatever you called the server in `.mcp.json`. The exact
@@ -91,10 +96,18 @@ All tools return both human-readable text and structured JSON
   + combined output (capped at 32 KiB head+tail).
 
 ### Navigation
+
+All navigation tools (`find_symbol`, `references`, `implementations`) and
+`ast_grep` accept an optional `scope`: `workspace`, `workspace+direct`
+(default), or `all`. The default returns hits from your module plus its
+direct `require`s; `all` extends into indirect deps and the standard
+library if those tiers are indexed (see [dep_index](#dependency-indexing)).
+
 - **`find_symbol`** — locate symbols by short name (supports `*` wildcards),
-  filter by kind (`func`, `method`, `type`, `var`, `const`).
+  filter by kind (`func`, `method`, `type`, `var`, `const`). Each hit
+  includes the package tier (`workspace` / `direct` / `indirect` / `stdlib`).
 - **`definition`** — resolve the symbol at `file:line:col` to its
-  declaration.
+  declaration. Works across all indexed packages including stdlib.
 - **`references`** — list every use-site of a qualified symbol; supports
   `package_glob` scoping and `limit`.
 - **`implementations`** — every named type whose method set satisfies a
@@ -137,6 +150,34 @@ Qualified names match `ssa.Function.String()` exactly:
 Generics: input accepts either origin form (`pkg.Foo`) or instantiation
 form (`pkg.Foo[int]`); both resolve to the origin.
 
+## Dependency indexing
+
+By default gopher-mcp indexes your workspace module plus everything in its
+`require` lines (direct deps). Indirect deps and the Go standard library
+are opt-in — each multiplies the indexed-symbol count by an order of
+magnitude. Pick what you need:
+
+```bash
+gopher-mcp -root . -deps workspace   # workspace only
+gopher-mcp -root . -deps direct      # default
+gopher-mcp -root . -deps stdlib      # workspace + direct + stdlib
+gopher-mcp -root . -deps all         # everything transitively reachable
+```
+
+Or in `.repo-mcp.yaml`:
+
+```yaml
+dep_index:
+  direct: true       # default; false to drop direct deps
+  indirect: false    # transitive deps not in your `require` block
+  stdlib: false      # fmt, encoding/json, ...
+```
+
+At runtime, the navigation tools take a per-call `scope` parameter
+(`workspace`, `workspace+direct` (default), `all`) that further narrows
+which indexed tiers are searched. Indexing controls what's *available*;
+scope controls what each query *touches*.
+
 ## Configuration: `.repo-mcp.yaml`
 
 See [`.repo-mcp.example.yaml`](.repo-mcp.example.yaml) for a fully
@@ -144,6 +185,10 @@ commented example. The schema:
 
 ```yaml
 version: 1
+dep_index:    # which package tiers to index (see "Dependency indexing")
+  direct: true
+  indirect: false
+  stdlib: false
 resources:    # files exposed as MCP resources (URI repo:<path>)
   - path: CLAUDE.md
     title: ...

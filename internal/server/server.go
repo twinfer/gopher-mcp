@@ -88,6 +88,8 @@ When working on Go code in this module, prefer these MCP tools over ` + "`grep`/
 
 Symbol qnames match ` + "`ssa.Function.String()`" + `: ` + "`pkg/path.Func`" + `, ` + "`(*pkg/path.Recv).Method`" + `, ` + "`pkg/path.TypeName`" + `. If you don't know the qname, call ` + "`find_symbol`" + ` first.
 
+Scope: ` + "`find_symbol`" + `, ` + "`references`" + `, ` + "`implementations`" + `, and ` + "`ast_grep`" + ` accept an optional ` + "`scope`" + ` parameter (` + "`workspace`" + `, ` + "`workspace+direct`" + ` (default), or ` + "`all`" + `). The default covers the workspace module plus its direct ` + "`require`" + `s, which is the right tradeoff for most "who calls this?" questions. Pass ` + "`scope: all`" + ` to extend into indirect deps and the standard library (only useful if the server was started with those tiers indexed — see ` + "`dep_index`" + ` in ` + "`.repo-mcp.yaml`" + `).
+
 Grep is still the right tool for: comments, log/error strings, config files, non-Go files, and anything outside this module.`
 }
 

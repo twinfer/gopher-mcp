@@ -28,6 +28,7 @@ type Sym struct {
 	Obj     types.Object // pointer-stable within a Snapshot
 	PkgPath string
 	Pos     token.Position
+	Tier    PkgTier // workspace / direct / indirect / stdlib
 }
 
 // SymbolTable is built once per Snapshot from packages.Package metadata.
@@ -115,8 +116,10 @@ func stripTestSuffix(pkgPath string) string {
 }
 
 // buildSymbolTable walks every loaded package's top-level scope and methods,
-// emitting one Sym per logical symbol.
-func buildSymbolTable(fset *token.FileSet, pkgs []*packages.Package) *SymbolTable {
+// emitting one Sym per logical symbol. tier maps pkg path → tier and stamps
+// each Sym so downstream filters are cheap; on QName collision the
+// higher-priority tier wins (workspace > direct > indirect > stdlib).
+func buildSymbolTable(fset *token.FileSet, pkgs []*packages.Package, tier map[string]PkgTier) *SymbolTable {
 	st := &SymbolTable{
 		BySN: make(map[string][]*Sym),
 		ByQN: make(map[string]*Sym),
@@ -127,10 +130,11 @@ func buildSymbolTable(fset *token.FileSet, pkgs []*packages.Package) *SymbolTabl
 		if pkg.Types == nil {
 			continue
 		}
+		pkgTier := tier[pkg.PkgPath]
 		scope := pkg.Types.Scope()
 		for _, name := range scope.Names() {
 			obj := scope.Lookup(name)
-			st.addObject(fset, obj)
+			st.addObject(fset, obj, pkgTier)
 			if tn, ok := obj.(*types.TypeName); ok {
 				if named, ok := tn.Type().(*types.Named); ok {
 					if !seenNamed[named] {
@@ -139,7 +143,7 @@ func buildSymbolTable(fset *token.FileSet, pkgs []*packages.Package) *SymbolTabl
 					}
 					// Methods (declared in this package) are emitted as their own symbols.
 					for m := range named.Methods() {
-						st.addObject(fset, m)
+						st.addObject(fset, m, pkgTier)
 					}
 				}
 			}
@@ -148,7 +152,7 @@ func buildSymbolTable(fset *token.FileSet, pkgs []*packages.Package) *SymbolTabl
 	return st
 }
 
-func (st *SymbolTable) addObject(fset *token.FileSet, obj types.Object) {
+func (st *SymbolTable) addObject(fset *token.FileSet, obj types.Object, tier PkgTier) {
 	if obj == nil || !obj.Exported() && obj.Pkg() == nil {
 		return
 	}
@@ -165,13 +169,29 @@ func (st *SymbolTable) addObject(fset *token.FileSet, obj types.Object) {
 		Obj:     obj,
 		PkgPath: pkgPathOf(obj),
 		Pos:     pos,
+		Tier:    tier,
 	}
-	// Don't clobber: if the same QName appears in both a real pkg and its
-	// `[pkg.test]` companion, keep the first (real) entry.
-	if _, exists := st.ByQN[qn]; !exists {
+	// On collision: prefer the higher-tier entry (workspace > direct > ...).
+	// This also keeps the existing rule that `[pkg.test]` companions don't
+	// clobber their real pkg, since both share the same tier and the first
+	// wins ties.
+	if existing, ok := st.ByQN[qn]; ok {
+		if tier <= existing.Tier {
+			return
+		}
+		// Replace BySN entry too — find and overwrite.
+		bySN := st.BySN[sym.SName]
+		for i, s := range bySN {
+			if s == existing {
+				bySN[i] = sym
+				break
+			}
+		}
 		st.ByQN[qn] = sym
-		st.BySN[sym.SName] = append(st.BySN[sym.SName], sym)
+		return
 	}
+	st.ByQN[qn] = sym
+	st.BySN[sym.SName] = append(st.BySN[sym.SName], sym)
 }
 
 func kindOf(obj types.Object) SymKind {

@@ -9,6 +9,38 @@ type RepoConfig struct {
 	EntryPoints map[string][]string `yaml:"entry_points,omitempty"`
 	Citations   []Citation          `yaml:"citations,omitempty"`
 	Proto       []ProtoEntry        `yaml:"proto,omitempty"`
+	DepIndex    DepIndexConfig      `yaml:"dep_index,omitempty"`
+}
+
+// DepIndexConfig controls which dependency tiers gopher-mcp indexes.
+//
+// Workspace packages are always indexed. Direct dependencies (listed in the
+// root go.mod's require block) are indexed by default. Indirect deps and the
+// standard library are opt-in — they multiply the indexed-symbol count by
+// 10x+ on a typical repo.
+//
+// When the .repo-mcp.yaml is absent, the zero value applies and defaults to
+// workspace + direct.
+type DepIndexConfig struct {
+	// Direct controls indexing of direct require'd modules. Nil means default
+	// (true). Use a pointer so an explicit `direct: false` is distinguishable
+	// from absence.
+	Direct *bool `yaml:"direct,omitempty"`
+
+	// Indirect indexes modules pulled in transitively (go.mod `// indirect`).
+	Indirect bool `yaml:"indirect,omitempty"`
+
+	// Stdlib indexes the Go standard library packages (those with no module).
+	Stdlib bool `yaml:"stdlib,omitempty"`
+}
+
+// DirectEnabled returns whether direct deps are indexed. Defaults to true
+// when unset.
+func (d DepIndexConfig) DirectEnabled() bool {
+	if d.Direct == nil {
+		return true
+	}
+	return *d.Direct
 }
 
 // Resource surfaces a file at <root>/<Path> as an MCP resource.

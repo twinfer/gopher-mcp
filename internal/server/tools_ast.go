@@ -9,6 +9,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/twinfer/gopher-mcp/internal/astgrep"
+	"github.com/twinfer/gopher-mcp/internal/index"
 )
 
 type astGrepIn struct {
@@ -18,6 +19,7 @@ type astGrepIn struct {
 	Target      string `json:"target,omitempty" jsonschema:"for kind=typeassert or conv: qualified target type; '*pkg.T' for pointer"`
 	Iface       string `json:"iface,omitempty" jsonschema:"for kind=implements: qualified interface name"`
 	PackageGlob string `json:"package_glob,omitempty" jsonschema:"restrict to packages matching this pattern"`
+	Scope       string `json:"scope,omitempty" jsonschema:"tier scope: 'workspace', 'workspace+direct' (default), or 'all'."`
 }
 
 type astHit struct {
@@ -43,13 +45,19 @@ func (s *Server) registerASTTools() {
 			"  - typeassert: find type assertions to a qualified type (use 'target')\n" +
 			"  - conv: find conversions to a qualified type (use 'target')\n" +
 			"  - implements: find types whose method set satisfies an interface (use 'iface')\n" +
-			"All kinds accept 'package_glob' to restrict scope (e.g. 'github.com/foo/...').",
+			"All kinds accept 'package_glob' to restrict scope (e.g. 'github.com/foo/...'). " +
+			"Tier scope defaults to workspace + direct deps; pass scope='all' to match " +
+			"inside indirect deps and the standard library.",
 	}, s.handleASTGrep)
 }
 
 func (s *Server) handleASTGrep(_ context.Context, _ *mcp.CallToolRequest, in astGrepIn) (*mcp.CallToolResult, astGrepOut, error) {
 	if strings.TrimSpace(in.Kind) == "" {
 		return nil, astGrepOut{}, errors.New("kind is required")
+	}
+	scope, err := index.ParseScope(in.Scope)
+	if err != nil {
+		return nil, astGrepOut{}, err
 	}
 	snap, err := s.snapshot()
 	if err != nil {
@@ -62,6 +70,7 @@ func (s *Server) handleASTGrep(_ context.Context, _ *mcp.CallToolRequest, in ast
 		Target:      in.Target,
 		Iface:       in.Iface,
 		PackageGlob: in.PackageGlob,
+		Scope:       scope,
 	})
 	if err != nil {
 		return nil, astGrepOut{}, err

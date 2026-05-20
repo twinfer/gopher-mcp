@@ -29,11 +29,12 @@ const (
 // Pattern is the input to Match.
 type Pattern struct {
 	Kind        Kind
-	Func        string // for KindCall: qualified callee, supports '*' wildcards
-	NArgs       *int   // for KindCall: optional exact arg count
-	Target      string // for KindTypeAssert / KindConv: qualified target type
-	Iface       string // for KindImplements: qualified interface name
-	PackageGlob string // restrict to packages whose path matches
+	Func        string      // for KindCall: qualified callee, supports '*' wildcards
+	NArgs       *int        // for KindCall: optional exact arg count
+	Target      string      // for KindTypeAssert / KindConv: qualified target type
+	Iface       string      // for KindImplements: qualified interface name
+	PackageGlob string      // restrict to packages whose path matches
+	Scope       index.Scope // tier scope; empty == workspace + direct
 }
 
 // Hit is one match.
@@ -71,10 +72,14 @@ func matchImplements(snap *index.Snapshot, pat Pattern) ([]Hit, error) {
 	}
 	var hits []Hit
 	for _, named := range snap.Syms.AllNamed {
-		if named.Obj().Pkg() == nil {
+		pkg := named.Obj().Pkg()
+		if pkg == nil {
 			continue
 		}
-		if !util.MatchPackagePath(pat.PackageGlob, named.Obj().Pkg().Path()) {
+		if !inScope(snap, pat.Scope, pkg.Path()) {
+			continue
+		}
+		if !util.MatchPackagePath(pat.PackageGlob, pkg.Path()) {
 			continue
 		}
 		// An interface T implements itself; skip that noise.
@@ -85,7 +90,7 @@ func matchImplements(snap *index.Snapshot, pat Pattern) ([]Hit, error) {
 			pos := snap.Fset.Position(named.Obj().Pos())
 			hits = append(hits, Hit{
 				QName:   index.QualifyNamed(named),
-				PkgPath: named.Obj().Pkg().Path(),
+				PkgPath: pkg.Path(),
 				File:    pos.Filename,
 				Line:    pos.Line,
 				Col:     pos.Column,
@@ -93,6 +98,22 @@ func matchImplements(snap *index.Snapshot, pat Pattern) ([]Hit, error) {
 		}
 	}
 	return hits, nil
+}
+
+// inScope reports whether pkgPath's tier is included in scope. Cached lookup
+// against snap.Tier — no allocations on the hot path beyond the set we'd
+// build for each call. Kept simple; the caller usually wraps this in a tier
+// set if iteration is hot.
+func inScope(snap *index.Snapshot, scope index.Scope, pkgPath string) bool {
+	tier := snap.TierOf(pkgPath)
+	switch scope {
+	case index.ScopeWorkspace:
+		return tier == index.TierWorkspace
+	case index.ScopeAll:
+		return true
+	default: // ScopeWorkspaceDirect, ""
+		return tier == index.TierWorkspace || tier == index.TierDirect
+	}
 }
 
 func matchAST(snap *index.Snapshot, pat Pattern) ([]Hit, error) {
@@ -111,7 +132,7 @@ func matchAST(snap *index.Snapshot, pat Pattern) ([]Hit, error) {
 	seen := make(map[string]bool) // de-dup file:line:col
 
 	var hits []Hit
-	for _, pkg := range snap.Pkgs {
+	for _, pkg := range snap.PkgsForScope(pat.Scope) {
 		if !util.MatchPackagePath(pat.PackageGlob, pkg.PkgPath) {
 			continue
 		}

@@ -90,9 +90,10 @@ func (s *Snapshot) Definition(absFile string, line, col int) (*Sym, error) {
 	return nil, fmt.Errorf("no symbol at %s:%d:%d", absFile, line, col)
 }
 
-// References returns every use-site of the symbol named qname. The second
+// References returns every use-site of the symbol named qname. scope selects
+// which package tiers to walk (empty == workspace + direct). The second
 // return reports whether the result was truncated by limit (0 = no limit).
-func (s *Snapshot) References(qname, packageGlob string, limit int) ([]Reference, bool) {
+func (s *Snapshot) References(qname, packageGlob string, scope Scope, limit int) ([]Reference, bool) {
 	qname = StripInstantiation(qname)
 	sym, ok := s.Syms.ByQN[qname]
 	if !ok {
@@ -100,7 +101,7 @@ func (s *Snapshot) References(qname, packageGlob string, limit int) ([]Reference
 	}
 	target := sym.Obj
 	var refs []Reference
-	for _, pkg := range s.Pkgs {
+	for _, pkg := range s.PkgsForScope(scope) {
 		if pkg.TypesInfo == nil {
 			continue
 		}
@@ -121,8 +122,8 @@ func (s *Snapshot) References(qname, packageGlob string, limit int) ([]Reference
 }
 
 // Implementations returns every named type whose method set satisfies the
-// interface named by ifaceQN.
-func (s *Snapshot) Implementations(ifaceQN, packageGlob string) []*Sym {
+// interface named by ifaceQN. scope selects which package tiers to walk.
+func (s *Snapshot) Implementations(ifaceQN, packageGlob string, scope Scope) []*Sym {
 	ifaceQN = StripInstantiation(ifaceQN)
 	sym, ok := s.Syms.ByQN[ifaceQN]
 	if !ok {
@@ -132,12 +133,17 @@ func (s *Snapshot) Implementations(ifaceQN, packageGlob string) []*Sym {
 	if !ok {
 		return nil
 	}
+	tierSet := tierSetFor(scope)
 	var out []*Sym
 	for _, named := range s.Syms.AllNamed {
-		if named.Obj().Pkg() == nil {
+		pkg := named.Obj().Pkg()
+		if pkg == nil {
 			continue
 		}
-		if !util.MatchPackagePath(packageGlob, named.Obj().Pkg().Path()) {
+		if !tierSet[s.Tier[pkg.Path()]] {
+			continue
+		}
+		if !util.MatchPackagePath(packageGlob, pkg.Path()) {
 			continue
 		}
 		if _, isIface := named.Underlying().(*types.Interface); isIface {
