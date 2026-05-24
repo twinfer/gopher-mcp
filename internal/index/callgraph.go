@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"go/token"
 	"go/types"
+	"slices"
 	"sort"
 	"sync"
 
@@ -39,10 +40,10 @@ type CallEdge struct {
 type callgraphState struct {
 	snap *Snapshot
 
-	progOnce sync.Once
-	prog     *ssa.Program
-	funcByQN map[string]*ssa.Function
-	progErr  error
+	progOnce  sync.Once
+	prog      *ssa.Program
+	funcsByQN map[string][]*ssa.Function
+	progErr   error
 
 	chaOnce sync.Once
 	cha     *callgraph.Graph
@@ -58,7 +59,7 @@ func (c *callgraphState) ensureProgram() error {
 		}
 		prog.Build()
 		c.prog = prog
-		c.funcByQN = indexFunctions(prog)
+		c.funcsByQN = indexFunctions(prog)
 	})
 	return c.progErr
 }
@@ -76,6 +77,10 @@ func (c *callgraphState) ensureCHA() (*callgraph.Graph, error) {
 
 // buildRTA constructs an RTA call graph rooted at the given entry-point QNames.
 // RTA results are not cached; entry points are part of the query.
+//
+// When a qname resolves to multiple SSA variants (e.g. regular + test-compiled
+// for a package with _test.go files), every variant is used as a root so RTA
+// reachability covers both call-site populations.
 func (c *callgraphState) buildRTA(entryQNs []string) (*callgraph.Graph, []string, error) {
 	if err := c.ensureProgram(); err != nil {
 		return nil, nil, err
@@ -83,15 +88,17 @@ func (c *callgraphState) buildRTA(entryQNs []string) (*callgraph.Graph, []string
 	if len(entryQNs) == 0 {
 		return nil, nil, errors.New("rta: at least one entry_point is required")
 	}
-	roots := make([]*ssa.Function, 0, len(entryQNs))
-	var missing []string
+	var (
+		roots   []*ssa.Function
+		missing []string
+	)
 	for _, qn := range entryQNs {
-		fn, ok := c.funcByQN[StripInstantiation(qn)]
-		if !ok || fn == nil {
+		fns := c.funcsByQN[StripInstantiation(qn)]
+		if len(fns) == 0 {
 			missing = append(missing, qn)
 			continue
 		}
-		roots = append(roots, fn)
+		roots = append(roots, fns...)
 	}
 	if len(roots) == 0 {
 		return nil, missing, fmt.Errorf("rta: no entry points resolved (missing: %v)", missing)
@@ -103,20 +110,28 @@ func (c *callgraphState) buildRTA(entryQNs []string) (*callgraph.Graph, []string
 	return res.CallGraph, missing, nil
 }
 
-// indexFunctions builds qname → *ssa.Function over every source-declared
+// indexFunctions builds qname → []*ssa.Function over every source-declared
 // function in the program. We walk Members (which include unexported and
 // non-root funcs like `main`) and named-type method sets, rather than relying
 // on ssautil.AllFunctions which is a reachability heuristic.
-func indexFunctions(prog *ssa.Program) map[string]*ssa.Function {
-	out := make(map[string]*ssa.Function)
+//
+// One qname can map to multiple SSA functions: with packages.Load(Tests: true),
+// a package that has _test.go files is loaded twice (regular + test-compiled),
+// yielding two *ssa.Function for the same source-level function. Importers
+// outside the test binary are linked against the regular variant; functions
+// in _test.go files are linked against the test variant. Keeping both ensures
+// callgraph queries see call sites from either side.
+func indexFunctions(prog *ssa.Program) map[string][]*ssa.Function {
+	out := make(map[string][]*ssa.Function)
 	add := func(fn *ssa.Function) {
 		if fn == nil || fn.Synthetic != "" {
 			return
 		}
 		qn := fn.String()
-		if _, exists := out[qn]; !exists {
-			out[qn] = fn
+		if slices.Contains(out[qn], fn) {
+			return
 		}
+		out[qn] = append(out[qn], fn)
 	}
 	for _, p := range prog.AllPackages() {
 		if p == nil || p.Pkg == nil {
@@ -166,43 +181,63 @@ func (s *Snapshot) callgraph() *callgraphState {
 // selected precision. With CHA the result may contain spurious edges from
 // generic/interface over-approximation; with RTA, edges are precise but limited
 // to functions reachable from entry_points.
+//
+// When the qname has multiple SSA variants (see indexFunctions), edges are
+// unioned across variants and deduped by call site.
 func (s *Snapshot) Callers(qname string, prec Precision, entryPoints []string) ([]CallEdge, error) {
-	g, fn, _, err := s.lookupNode(qname, prec, entryPoints)
+	g, fns, _, err := s.lookupNodes(qname, prec, entryPoints)
 	if err != nil {
 		return nil, err
 	}
-	node := g.Nodes[fn]
-	if node == nil {
-		return nil, nil
-	}
-	out := make([]CallEdge, 0, len(node.In))
-	for _, e := range node.In {
-		out = append(out, edgeFromSSA(s.Fset, e))
-	}
-	sortEdges(out)
-	return out, nil
+	edges := collectEdges(s.Fset, g, fns, func(n *callgraph.Node) []*callgraph.Edge { return n.In })
+	sortEdges(edges)
+	return edges, nil
 }
 
 // Callees returns every outgoing call edge from fn (qualified name).
 func (s *Snapshot) Callees(qname string, prec Precision, entryPoints []string) ([]CallEdge, error) {
-	g, fn, _, err := s.lookupNode(qname, prec, entryPoints)
+	g, fns, _, err := s.lookupNodes(qname, prec, entryPoints)
 	if err != nil {
 		return nil, err
 	}
-	node := g.Nodes[fn]
-	if node == nil {
-		return nil, nil
+	edges := collectEdges(s.Fset, g, fns, func(n *callgraph.Node) []*callgraph.Edge { return n.Out })
+	sortEdges(edges)
+	return edges, nil
+}
+
+// collectEdges unions edges across every SSA variant of a logical function
+// and dedupes by call site.
+func collectEdges(fset *token.FileSet, g *callgraph.Graph, fns []*ssa.Function, pick func(*callgraph.Node) []*callgraph.Edge) []CallEdge {
+	type key struct {
+		caller, callee, file string
+		line, col            int
 	}
-	out := make([]CallEdge, 0, len(node.Out))
-	for _, e := range node.Out {
-		out = append(out, edgeFromSSA(s.Fset, e))
+	seen := make(map[key]bool)
+	var out []CallEdge
+	for _, fn := range fns {
+		node := g.Nodes[fn]
+		if node == nil {
+			continue
+		}
+		for _, e := range pick(node) {
+			ce := edgeFromSSA(fset, e)
+			k := key{ce.CallerQN, ce.CalleeQN, ce.File, ce.Line, ce.Col}
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
+			out = append(out, ce)
+		}
 	}
-	sortEdges(out)
-	return out, nil
+	return out
 }
 
 // ReverseTrace finds a call path from any of entryPoints to target. Returns
 // the first path discovered (order: entryPoints), or nil if none exists.
+//
+// Entry-point and target qnames may each resolve to multiple SSA variants;
+// the search tries every (entry-variant → any target-variant) pair until a
+// path is found.
 func (s *Snapshot) ReverseTrace(target string, entryPoints []string, prec Precision) ([]CallEdge, error) {
 	if len(entryPoints) == 0 {
 		return nil, errors.New("entry_points is required")
@@ -222,52 +257,56 @@ func (s *Snapshot) ReverseTrace(target string, entryPoints []string, prec Precis
 	if err != nil {
 		return nil, err
 	}
-	targetFn, ok := cg.funcByQN[StripInstantiation(target)]
-	if !ok {
+	targetFns := cg.funcsByQN[StripInstantiation(target)]
+	if len(targetFns) == 0 {
 		return nil, fmt.Errorf("target not found: %s", target)
 	}
-	targetNode := g.Nodes[targetFn]
-	if targetNode == nil {
+	targetNodes := make(map[*callgraph.Node]bool)
+	for _, tFn := range targetFns {
+		if n := g.Nodes[tFn]; n != nil {
+			targetNodes[n] = true
+		}
+	}
+	if len(targetNodes) == 0 {
 		return nil, nil
 	}
-	isEnd := func(n *callgraph.Node) bool { return n == targetNode }
+	isEnd := func(n *callgraph.Node) bool { return targetNodes[n] }
 	for _, ep := range entryPoints {
-		epFn, ok := cg.funcByQN[StripInstantiation(ep)]
-		if !ok {
-			continue
-		}
-		startNode := g.Nodes[epFn]
-		if startNode == nil {
-			continue
-		}
-		path := callgraph.PathSearch(startNode, isEnd)
-		if path != nil {
-			out := make([]CallEdge, 0, len(path))
-			for _, e := range path {
-				out = append(out, edgeFromSSA(s.Fset, e))
+		for _, epFn := range cg.funcsByQN[StripInstantiation(ep)] {
+			startNode := g.Nodes[epFn]
+			if startNode == nil {
+				continue
 			}
-			return out, nil
+			path := callgraph.PathSearch(startNode, isEnd)
+			if path != nil {
+				out := make([]CallEdge, 0, len(path))
+				for _, e := range path {
+					out = append(out, edgeFromSSA(s.Fset, e))
+				}
+				return out, nil
+			}
 		}
 	}
 	return nil, nil
 }
 
-// lookupNode resolves qname → ssa.Function and returns the chosen call graph.
-func (s *Snapshot) lookupNode(qname string, prec Precision, entryPoints []string) (*callgraph.Graph, *ssa.Function, []string, error) {
+// lookupNodes resolves qname → []ssa.Function (all SSA variants sharing that
+// qname) and returns the chosen call graph.
+func (s *Snapshot) lookupNodes(qname string, prec Precision, entryPoints []string) (*callgraph.Graph, []*ssa.Function, []string, error) {
 	cg := s.callgraph()
 	if err := cg.ensureProgram(); err != nil {
 		return nil, nil, nil, err
 	}
-	fn, ok := cg.funcByQN[StripInstantiation(qname)]
-	if !ok {
+	fns := cg.funcsByQN[StripInstantiation(qname)]
+	if len(fns) == 0 {
 		return nil, nil, nil, fmt.Errorf("function not found in SSA program: %s", qname)
 	}
 	if prec == PrecisionRTA {
 		g, missing, err := cg.buildRTA(entryPoints)
-		return g, fn, missing, err
+		return g, fns, missing, err
 	}
 	g, err := cg.ensureCHA()
-	return g, fn, nil, err
+	return g, fns, nil, err
 }
 
 func edgeFromSSA(fset *token.FileSet, e *callgraph.Edge) CallEdge {
