@@ -98,6 +98,45 @@ func TestP2_Implementations(t *testing.T) {
 		"expected example.com/tiny.S in implementers, got: %+v", out.Types)
 }
 
+// The text path for find_symbol / references / implementations must carry
+// citable file:line(:col) hits, not just a count. Regressions here would push
+// callers back toward grep — guarding against a return to the bad shape.
+
+func TestP2_FindSymbol_TextHasCitations(t *testing.T) {
+	sess := startServer(t, "tiny")
+	res, err := sess.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      "find_symbol",
+		Arguments: map[string]any{"name": "Foo"},
+	})
+	require.NoError(t, err)
+	text := textOf(res)
+	require.Regexp(t, `\.go:\d+`, text, "find_symbol text must include file:line citations, got: %q", text)
+	require.Contains(t, text, "example.com/tiny.Foo", "find_symbol text must include qname, got: %q", text)
+}
+
+func TestP2_References_TextHasCitations(t *testing.T) {
+	sess := startServer(t, "tiny")
+	res, err := sess.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      "references",
+		Arguments: map[string]any{"qname": "example.com/tiny.Foo"},
+	})
+	require.NoError(t, err)
+	text := textOf(res)
+	require.Regexp(t, `\.go:\d+:\d+`, text, "references text must include file:line:col citations, got: %q", text)
+}
+
+func TestP2_Implementations_TextHasCitations(t *testing.T) {
+	sess := startServer(t, "tiny")
+	res, err := sess.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      "implementations",
+		Arguments: map[string]any{"iface": "example.com/tiny.I"},
+	})
+	require.NoError(t, err)
+	text := textOf(res)
+	require.Regexp(t, `\.go:\d+`, text, "implementations text must include file:line citations, got: %q", text)
+	require.Contains(t, text, "example.com/tiny.S", "implementations text must include qname, got: %q", text)
+}
+
 func TestP2_AstGrep_Call_fmtPrintln(t *testing.T) {
 	sess := startServer(t, "tiny")
 	res, err := sess.CallTool(t.Context(), &mcp.CallToolParams{

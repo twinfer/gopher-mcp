@@ -78,10 +78,48 @@ Rename `repo` to whatever you called the server in `.mcp.json`. The exact
 phrasing matters less than being prescriptive — "use X when Y" beats
 "please consider using the MCP."
 
-If routing via `CLAUDE.md` isn't enough, you can add a `PreToolUse` hook
-that blocks `grep`/`rg` invocations on `.go` files and points the model at
-the MCP instead. That's heavy-handed but effective for repos where you want
-hard guarantees.
+### Escalations
+
+If the `CLAUDE.md` block isn't enough, two ready-to-copy artifacts ship
+under `examples/`:
+
+- **Skill** — [`examples/skills/code-search-go.md`](examples/skills/code-search-go.md).
+  Drop into `.claude/skills/code-search-go.md` (project) or
+  `~/.claude/skills/code-search-go.md` (user). Skills appear in the
+  available-skills list every turn, so this nudge stays in attention even
+  on long sessions where `CLAUDE.md` scrolls out. The skill's frontmatter
+  description triggers on Go-symbol search intents specifically.
+
+- **PreToolUse hook** — [`examples/hooks/no-grep-for-go.sh`](examples/hooks/no-grep-for-go.sh).
+  Blocks Bash invocations of `grep` / `rg` / `git grep` whose pattern looks
+  like a Go declaration or call (`func Foo`, `type T struct`, `.Foo(`,
+  etc.) and prints a message redirecting to the MCP tools. Heavier hand
+  than the skill — it intercepts at the moment of misuse rather than
+  hoping the model remembers. Install:
+
+  ```bash
+  cp examples/hooks/no-grep-for-go.sh ~/.claude/hooks/no-grep-for-go.sh
+  chmod +x ~/.claude/hooks/no-grep-for-go.sh
+  ```
+
+  Then in `.claude/settings.json` (project) or `~/.claude/settings.json`
+  (user):
+
+  ```json
+  {
+    "hooks": {
+      "PreToolUse": [{
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "/absolute/path/to/no-grep-for-go.sh" }
+        ]
+      }]
+    }
+  }
+  ```
+
+  Escape hatch for legitimate non-symbol searches (log strings, vendored
+  deps, config keys): append `# allow-go-grep` to the command.
 
 ## Tools
 

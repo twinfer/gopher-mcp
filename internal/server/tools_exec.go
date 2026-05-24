@@ -19,6 +19,15 @@ const (
 	// model. Go test output can be huge (verbose mode, race traces); the tail
 	// usually carries the FAIL summary so we keep the head + tail.
 	runTestOutputCap = 32 * 1024
+
+	// goDocOutputCap bounds 'go doc -all' output. A single big package can
+	// dump tens of thousands of tokens; clipping forces the model to ask for
+	// a specific symbol instead.
+	goDocOutputCap = 16 * 1024
+
+	// goListModulesOutputCap bounds 'go list -m -json all'. Large monorepo
+	// dependency graphs run to hundreds of KiB of JSON.
+	goListModulesOutputCap = 32 * 1024
 )
 
 type goDocIn struct {
@@ -26,13 +35,15 @@ type goDocIn struct {
 }
 
 type goDocOut struct {
-	Output string `json:"output"`
+	Output    string `json:"output"`
+	Truncated bool   `json:"truncated"`
 }
 
 type goListIn struct{}
 
 type goListOut struct {
-	Output string `json:"output"`
+	Output    string `json:"output"`
+	Truncated bool   `json:"truncated"`
 }
 
 type runTestIn struct {
@@ -53,12 +64,12 @@ type runTestOut struct {
 func (s *Server) registerExecTools() {
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name:        "go_doc",
-		Description: "Run 'go doc -all <path>' in the repo root. Returns formatted API documentation without source noise.",
+		Description: "Run 'go doc -all <path>' in the repo root. Returns formatted API documentation without source noise. Output is capped (head + tail) at 16KiB; if truncated, narrow 'path' to a specific symbol (e.g. 'net/http.Client') or use find_symbol for navigation.",
 	}, s.handleGoDoc)
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name:        "go_list_modules",
-		Description: "Run 'go list -m -json all' in the repo root. Returns the module dependency graph as a JSON stream.",
+		Description: "Run 'go list -m -json all' in the repo root. Returns the module dependency graph as a JSON stream. Output is capped (head + tail) at 32KiB.",
 	}, s.handleGoListModules)
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
@@ -72,12 +83,20 @@ func (s *Server) handleGoDoc(ctx context.Context, _ *mcp.CallToolRequest, in goD
 		return nil, goDocOut{}, errors.New("path is required")
 	}
 	out, _ := runGo(ctx, s.root, "doc", "-all", in.Path)
-	return textResult(out), goDocOut{Output: out}, nil
+	clipped, truncated := clipOutput(out, goDocOutputCap)
+	if truncated {
+		clipped += "\n\n[gopher-mcp] Truncated. For a specific symbol pass 'pkg.Symbol' (e.g. 'net/http.Client'); for a one-line overview run 'go doc -short <pkg>' via your shell; for navigation use find_symbol / references."
+	}
+	return textResult(clipped), goDocOut{Output: clipped, Truncated: truncated}, nil
 }
 
 func (s *Server) handleGoListModules(ctx context.Context, _ *mcp.CallToolRequest, _ goListIn) (*mcp.CallToolResult, goListOut, error) {
 	out, _ := runGo(ctx, s.root, "list", "-m", "-json", "all")
-	return textResult(out), goListOut{Output: out}, nil
+	clipped, truncated := clipOutput(out, goListModulesOutputCap)
+	if truncated {
+		clipped += "\n\n[gopher-mcp] Truncated. For a specific module run 'go list -m -json <module>' via your shell, or 'go list -m all' for a names-only view."
+	}
+	return textResult(clipped), goListOut{Output: clipped, Truncated: truncated}, nil
 }
 
 func (s *Server) handleRunTest(ctx context.Context, _ *mcp.CallToolRequest, in runTestIn) (*mcp.CallToolResult, runTestOut, error) {

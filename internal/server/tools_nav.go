@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -153,7 +154,7 @@ func (s *Server) handleFindSymbol(_ context.Context, _ *mcp.CallToolRequest, in 
 		}
 		out.Hits = append(out.Hits, toSymHit(h))
 	}
-	return textResult(fmt.Sprintf("found %d symbol(s)", len(out.Hits))), out, nil
+	return textResult(s.formatSymHits("symbol(s)", out.Hits)), out, nil
 }
 
 func tierSetForScope(s index.Scope) map[index.PkgTier]bool {
@@ -212,7 +213,7 @@ func (s *Server) handleReferences(_ context.Context, _ *mcp.CallToolRequest, in 
 	for _, r := range refs {
 		out.Refs = append(out.Refs, refHit{File: r.File, Line: r.Line, Col: r.Col})
 	}
-	return textResult(fmt.Sprintf("found %d reference(s)", len(out.Refs))), out, nil
+	return textResult(s.formatRefHits(in.QName, out.Refs, in.Limit, truncated)), out, nil
 }
 
 func (s *Server) handleImplementations(_ context.Context, _ *mcp.CallToolRequest, in implementationsIn) (*mcp.CallToolResult, implementationsOut, error) {
@@ -232,7 +233,64 @@ func (s *Server) handleImplementations(_ context.Context, _ *mcp.CallToolRequest
 	for _, sym := range syms {
 		out.Types = append(out.Types, toSymHit(sym))
 	}
-	return textResult(fmt.Sprintf("found %d implementer(s)", len(out.Types))), out, nil
+	return textResult(s.formatSymHits(fmt.Sprintf("implementer(s) of %s", in.Iface), out.Types)), out, nil
+}
+
+// relpath returns p relative to s.root when p is under root, otherwise p
+// unchanged. Used to render citable file paths in tool text output — paths
+// outside the repo (stdlib in GOROOT, deps in the module cache) stay absolute.
+func (s *Server) relpath(p string) string {
+	if p == "" {
+		return p
+	}
+	rel, err := filepath.Rel(s.root, p)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return p
+	}
+	return rel
+}
+
+// formatSymHits renders symbol hits in a grep-like, pasteable form:
+//
+//	found N <noun>
+//	<file>:<line>  [<tier> <kind>]  <qname>
+//	...
+//
+// Used by find_symbol and implementations.
+func (s *Server) formatSymHits(noun string, hits []symHit) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "found %d %s", len(hits), noun)
+	for _, h := range hits {
+		tier := h.Tier
+		if tier == "" {
+			tier = "workspace"
+		}
+		fmt.Fprintf(&b, "\n%s:%d  [%s %s]  %s", s.relpath(h.File), h.Line, tier, h.Kind, h.QName)
+	}
+	return b.String()
+}
+
+// formatRefHits renders references in grep -n style:
+//
+//	found N reference(s) to <qname>
+//	<file>:<line>:<col>
+//	...
+//
+// When the result was capped by `limit`, a trailing hint points at it.
+func (s *Server) formatRefHits(qname string, refs []refHit, limit int, truncated bool) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "found %d reference(s) to %s", len(refs), qname)
+	for _, r := range refs {
+		fmt.Fprintf(&b, "\n%s:%d:%d", s.relpath(r.File), r.Line, r.Col)
+	}
+	if truncated {
+		if limit > 0 {
+			fmt.Fprintf(&b, "\n... truncated at limit=%d; re-run with a larger limit or a narrower package_glob", limit)
+		} else {
+			b.WriteString("\n... truncated")
+		}
+	}
+	return b.String()
 }
 
 func toSymHit(s *index.Sym) symHit {
